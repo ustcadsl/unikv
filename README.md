@@ -26,7 +26,7 @@ On Ubuntu 14.04 LTS or above, install
 `$ sudo apt-get install g++ libsnappy-dev`
 
 Getting the source code of UniKV  
-`$ git clone https://github.com/`
+`$ git clone https://github.com/ustcadsl/unikv.git`
 
 Compile UniKV  
 `$ cd UniKV`  
