@@ -1,0 +1,12 @@
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+Name: UniKV
+Description: A fast and lightweight key-value storage library
+Version: @VERSION@
+
+Requires:
+Libs: -L${libdir} -lunikv
+Cflags: -I${includedir}

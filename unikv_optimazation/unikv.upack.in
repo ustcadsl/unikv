@@ -1,0 +1,42 @@
+package unikv
+| source="unikv"
+| debian name="libunikv0"
+| version="@VERSION@"
+| release="1"
+| license="BSD"
+| copyright="2011-2013 The LevelDB Authors"
+| homepage="http://hyperdex.org"
+| tarball="http://hyperdex.org/src/unikv-{version}.tar.gz"
+| debian section="libs"
+| configure="--disable-static"
+| summary="A fast key-value storage library"
++ {libdir}/libunikv.so.0
++ {libdir}/libunikv.so.0.0.0
+'''LevelDB is a fast key-value storage library written at Google that provides
+an ordered mapping from string keys to string values.'''
+
+subpackage unikv-devel
+| debian name="libunikv-dev"
+| debian section="libdevel"
+| debian requires="libunikv0{self}"
+| fedora requires="unikv{self}"
+| summary="A fast key-value storage library (development files)"
++ {includedir}/unikv/cache.h
++ {includedir}/unikv/c.h
++ {includedir}/unikv/threadpool.h
++ {includedir}/unikv/comparator.h
++ {includedir}/unikv/db.h
++ {includedir}/unikv/env.h
++ {includedir}/unikv/filter_policy.h
++ {includedir}/unikv/iterator.h
++ {includedir}/unikv/options.h
++ {includedir}/unikv/replay_iterator.h
++ {includedir}/unikv/slice.h
++ {includedir}/unikv/status.h
++ {includedir}/unikv/table_builder.h
++ {includedir}/unikv/table.h
++ {includedir}/unikv/write_batch.h
++ {libdir}/libunikv.so
++ {libdir}/pkgconfig/libunikv.pc
+
+exclude {libdir}/libunikv.la
