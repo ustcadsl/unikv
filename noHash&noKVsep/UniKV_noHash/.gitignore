@@ -1,0 +1,36 @@
+## Core latex/pdflatex auxiliary files:
+*.aux
+*.cb
+*.cb2
+*.ent
+*.fls
+*.fmt
+*.fot
+*.lof
+*.log
+*.lot
+*.out
+*.toc
+
+## Intermediate documents:
+*.dvi
+*-converted-to.*
+main.pdf
+*.ps
+*.swp
+
+## Bibliography auxiliary files (bibtex/biblatex/biber):
+*.bbl
+*.bcf
+*.blg
+*-blx.aux
+*-blx.bib
+*.brf
+*.run.xml
+*.bak
+
+## Proofreading-generated file
+*.rtf
+
+## MAC related metadata
+.DS_Store
