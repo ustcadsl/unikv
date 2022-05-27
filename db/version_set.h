@@ -31,6 +31,8 @@
 #include <list>
 
 //#define PREFETCH_UNSORTEDSTORE
+#define ADDITER_THREADS
+//#define ADDITER_NORMAL
 
 typedef unsigned char byte;
 
@@ -116,6 +118,9 @@ class Version {
   void AddIterators(const ReadOptions&, std::vector<Iterator*>* iters,port::Mutex* mu,int partition)EXCLUSIVE_LOCKS_REQUIRED(mu);
   void AddIterators(const ReadOptions& options,std::vector<Iterator*>* iters,int partition,char* beginKey);
   
+  void UnCheckPointSSTableIterators(const ReadOptions& options,
+                           std::vector<FileMetaData*>* inputs,int partition, uint64_t SSTableID);
+
   static void* doSeekFiles(void *data);
   void rebuildHashIndexIterators(const ReadOptions& options,int partition,CuckooIndexEntry* myHashIndex);
   void printfIterators(const ReadOptions& options,int partition);
@@ -312,6 +317,8 @@ class VersionSet {
 
   // Return the number of Table files at the specified level.
   int NumLevelFiles(int level,int partition) const;
+
+  int64_t LevelTotalSize(int level,int partition) const;
   
   void InitializeTableCacheFileMetaData();
 
@@ -384,6 +391,7 @@ class VersionSet {
   bool NeedsCompaction(int partition) const {
     Version* v = current_;
     int scoreL0= v->pfiles_[partition][0].size() / static_cast<double>(config::kL0_CompactionTrigger);
+    if(scoreL0 < 1) scoreL0=LevelTotalSize(0,partition)/4480;
     return (scoreL0 >= 1)|| (v->file_to_compact_ != NULL);// 
   }
 

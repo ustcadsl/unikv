@@ -167,6 +167,10 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
       pmem_[i]=NULL;
       pimm_[i]=NULL;
       has_imm_[i].Release_Store(NULL);
+      totalLogTime[i]=0,totalFlushTime[i]=0,totalCompactTime[i]=0;
+      totalMemTableTime[i]=0;
+      totalReadMem[i]=0,totalReadL0[i]=0,totalReadLn[i]=0,totalReadOther[i]=0;
+      totalReadLockTime[i]=0;
   }
   for(int i=0;i<config::maxScanLength;i++){
     //Zero out the aiocb structure (recommended) 
@@ -193,8 +197,8 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
   treeRoot->setLeafFlag(1);
   compactPartition=0;
   NoPersistentFile=0;
-  totalLogTime=0,totalCacheTime=0,totalFlushTime=0,totalCompactTime=0;
-  totalReadMem=0,totalReadL0=0,totalReadLn=0,totalReadOther=0;totalGetCostLn=0;
+  totalGetCostLn=0;
+ 
   readDataSizeActual=0;
   finishCompaction=true;
   ampliFactor = 1.0;
@@ -224,9 +228,15 @@ DBImpl::~DBImpl() {
 	      //printf("after CompactMemTable!!\n");
       }
   }
-  printf("totalLogTime:%lf,totalCacheTime:%lf,totalFlushTime:%lf,totalMergeTime:%lf\n",totalLogTime,totalCacheTime,totalFlushTime,totalCompactTime);
-  printf("totalReadMem:%lf,totalReadL0:%lf,totalReadLn:%lf,totalCostGetLn:%lf,totalReadOther:%lf\n",totalReadMem,totalReadL0,totalReadLn,totalGetCostLn,totalReadOther);
-  persistentHashTable();
+  for(int i=0; i<=NewestPartition; i++){
+    printf("P:%d, totalLogTime:%lf,totalMemTableTime:%lf,totalFlushTime:%lf,totalMergeTime:%lf\n",i,totalLogTime[i],totalMemTableTime[i],totalFlushTime[i],totalCompactTime[i]);
+  }
+  for(int i=0; i<=NewestPartition; i++){
+    printf("P:%d, totalReadMem:%lf,totalReadL0:%lf,totalReadLn:%lf,totalReadLockTime:%lf,totalReadOther:%lf\n",i, totalReadMem[i],totalReadL0[i],totalReadLn[i],totalReadLockTime[i],totalReadOther[i]);
+  }
+  printf("totalCostGetLn:%lf\n",totalGetCostLn);
+
+  //persistentHashTable();
   printf("Get in Memtable:%d,IMemtable:%d\n",readMem,readImm);
   shutting_down_.Release_Store(this);  // Any non-NULL value is ok
   mutex_.Unlock();
@@ -547,7 +557,7 @@ Status DBImpl::Recover(VersionEdit* edit, bool *save_manifest) {
   // Recover in the order in which the logs were generated
   fprintf(stderr,"before RecoverLogFile,log.size:%d\n",logs.size());
   std::sort(logs.begin(), logs.end());
-  for (size_t i = 0; i < logs.size(); i++) {
+  /*for (size_t i = 0; i < logs.size(); i++) {
       s = RecoverLogFile(logs[i], (i == logs.size() - 1), save_manifest, edit,
             &max_sequence);
       if (!s.ok()) {
@@ -561,6 +571,7 @@ Status DBImpl::Recover(VersionEdit* edit, bool *save_manifest) {
   if (versions_->LastSequence() < max_sequence) {
     versions_->SetLastSequence(max_sequence);
   }
+  */
   return Status::OK();
 }
 
@@ -868,15 +879,26 @@ Status DBImpl::WriteLevel0Table(MemTable* mem, VersionEdit* edit,
   writeDataSizeActual=writeDataSizeActual+meta.file_size;
   writeDataSize+=meta.file_size;
   stats_[partition][level].Add(stats);
+  ///////////////////////
+  flushedMemTableNum[partition]++;
+  if(flushedMemTableNum[partition] >= 30){ //20//1//40//2
+    persistentHashTable(meta.number, partition);
+    flushedMemTableNum[partition]=0;
+  }
+  /////////////////////
   return s;
 }
 
 //persistent hash index into a disk file
-void DBImpl::persistentHashTable(){
+void DBImpl::persistentHashTable(uint64_t SSTableID, int partition){
   ofstream hashFile;
-  hashFile.open(config::HashTableFile);
+  string hashfilename = "../persitentIndexDir/hashTableStore" + std::to_string(partition); 
+  hashFile.open(hashfilename, ios::out);
+  hashFile<<SSTableID<<"\n";
+
   #ifdef LIST_HASH_INDEX
-  for(int p=0;p<=NewestPartition;p++){
+  int p = partition;
+  //for(int p=0;p<=NewestPartition;p++){
     for(int i=0;i<config::bucketNum;i++){
           ListIndexEntry *lastEntry=&ListHashIndex[p][i];
           if(bytes2ToInt(lastEntry->TableNum)!=0){
@@ -900,11 +922,12 @@ void DBImpl::persistentHashTable(){
             hashFile<<"\n";
           }
     }
-  }
+  //}
   #endif
 
   #ifdef CUCKOO_HASH_INDEX
-  for(int p=0;p<=NewestPartition;p++){
+  int p = partition;
+  //for(int p=0;p<=NewestPartition;p++){
     for(int i=0;i<config::bucketNum;i++){
       ListIndexEntry *lastEntry=&CuckooHashIndex[p][i];
           if(bytes2ToInt(lastEntry->TableNum)!=0){
@@ -928,21 +951,27 @@ void DBImpl::persistentHashTable(){
             hashFile<<"\n";
           }
     }
-  }
+  //}
   #endif
   hashFile.close();
 }
 
 //recovery the hash index from a disk file
-void DBImpl::recoveryHashTable(){
+void DBImpl::recoveryHashTable(const ReadOptions& options){
+
+for(int k=0;k<=NewestPartition;k++){
   ifstream hashFile;
-  hashFile.open(config::HashTableFile);
-  if (!hashFile){ 
+  uint64_t SSTableID = 0;
+  string hashfilename = "../persitentIndexDir/hashTableStore" + std::to_string(k);
+  hashFile.open(hashfilename);
+if (!hashFile){ 
       printf("open fail\n");     
       fprintf(stderr,"open fail\n");     
-  }
+} else{
   unsigned int partitionNumber=0,tag0,tag1,fileID,bucketNumber=0;
   char temp;
+  hashFile>>SSTableID;
+  fprintf(stderr,"SSTableID:%llu\n", SSTableID); 
 #ifdef LIST_HASH_INDEX
     while(hashFile>>partitionNumber){
             hashFile>>temp>>bucketNumber >> temp >> tag0 >> temp>>tag1>>temp>>fileID>>temp;
@@ -1008,6 +1037,120 @@ void DBImpl::recoveryHashTable(){
       } 
 #endif
   hashFile.close();
+  }
+  //std::vector<Iterator*> list;
+  std::vector<FileMetaData*> fileMetaVec;;
+  //std::map<uint64_t, Iterator*> iters;
+  versions_->current()->UnCheckPointSSTableIterators(options, &fileMetaVec, k, SSTableID);
+HashFunc curHashfunc;
+#ifdef LIST_HASH_INDEX
+  ListIndexEntry* curHashIndex=ListHashIndex[k];
+#endif
+
+#ifdef CUCKOO_HASH_INDEX
+  ListIndexEntry* curHashIndex=CuckooHashIndex[k];
+#endif
+//std::vector<FileMetaData*>::iterator it;
+printf("partition:%d, fileMetaVec size:%d\n",k, fileMetaVec.size());
+for(int j=0; j< fileMetaVec.size(); j++) {
+  FileMetaData *file = fileMetaVec[j];
+  byte* tableNumBytes=new byte[2];
+  intTo2Byte(int(file->number),tableNumBytes);
+  fprintf(stderr,"unCheckPoint SSTableID:%llu\n", file->number); 
+  //Iterator* iter=it->second;
+  Iterator* iter=table_cache_->NewIterator(options, file->number, file->file_size,false,false);
+     
+  iter->SeekToFirst();
+   for (; iter->Valid(); iter->Next()){
+      Slice key = iter->key();    
+      byte* keyBytes=new byte[4];
+      unsigned int intKey;
+      unsigned int hashKey;
+      if(strlen(key.data())>20){
+            intKey=strtoul(key.ToString().substr(4,config::kKeyLength).c_str(),NULL,10);
+            hashKey=curHashfunc.RSHash((char*)key.ToString().substr(0,config::kKeyLength).c_str(),config::kKeyLength);
+          //printf("myKey.size():%d,myKey.data():%s,intKey:%u\n",strlen(myKey.data()),myKey.ToString().substr(0,keyLength).c_str(),intKey);
+      }else{
+            intKey=strtoul(key.ToString().c_str(),NULL,10);
+            hashKey=curHashfunc.RSHash((char*)key.ToString().c_str(),config::kKeyLength-8);
+            //fprintf(stderr,"myKey.size():%d,myKey.data():%s,intKey:%d\n",(int)strlen(key.data()),key.data(),intKey);
+      }	
+      int keyBucket=intKey%config::bucketNum;
+      intTo4Byte(hashKey,keyBytes);///
+      //	printf( "intKey:%u,hashKey:%u,bucket:%d,%s,keyBytes[2]:%u,keyBytes[3]:%u\n",intKey,hashKey,keyBucket,(char*)myKey.ToString().substr(0,config::kKeyLength).c_str(),(unsigned int )keyBytes[2],(unsigned int )keyBytes[3]);
+#ifdef LIST_HASH_INDEX
+      ListIndexEntry *lastEntry=&curHashIndex[keyBucket];
+      int mytableNum=bytes2ToInt(lastEntry->TableNum);
+      if(mytableNum==0){
+        lastEntry->KeyTag[0]=keyBytes[2];
+        lastEntry->KeyTag[1]=keyBytes[3];     
+        lastEntry->TableNum[0]=tableNumBytes[0];
+        lastEntry->TableNum[1]=tableNumBytes[1];
+        lastEntry->TableNum[2]=tableNumBytes[2];
+      }else{
+        ListIndexEntry *beginNextEntry=lastEntry->nextEntry;    
+        ListIndexEntry *addEntry=new ListIndexEntry;      
+        addEntry->KeyTag[0]=lastEntry->KeyTag[0];
+        addEntry->KeyTag[1]=lastEntry->KeyTag[1];
+        addEntry->TableNum[0]=lastEntry->TableNum[0];
+        addEntry->TableNum[1]=lastEntry->TableNum[1];
+        addEntry->TableNum[2]=lastEntry->TableNum[2];
+
+        lastEntry->KeyTag[0]=keyBytes[2];
+        lastEntry->KeyTag[1]=keyBytes[3];
+        lastEntry->TableNum[0]=tableNumBytes[0];
+        lastEntry->TableNum[1]=tableNumBytes[1];
+        lastEntry->TableNum[2]=tableNumBytes[2];
+        lastEntry->nextEntry=addEntry;
+        addEntry->nextEntry=beginNextEntry;
+      }
+#endif
+
+#ifdef CUCKOO_HASH_INDEX
+      int findEmptyBucket=0;
+        for(int k=0;k<config::cuckooHashNum;k++){
+          keyBucket=curHashfunc.cuckooHash((char*)key.ToString().substr(0,config::kKeyLength).c_str(),k,config::kKeyLength);
+          int mytableNum=bytes2ToInt(curHashIndex[keyBucket].TableNum);
+          //if(curHashIndex[keyBucket].KeyTag[0]==0 && curHashIndex[keyBucket].KeyTag[1]==0){
+          if(mytableNum==0){
+            findEmptyBucket=1;
+            break;
+          }
+        }
+        if(findEmptyBucket){
+          //fprintf(stderr,"add to cuckoo hash !!\n");
+          curHashIndex[keyBucket].KeyTag[0]=keyBytes[2];
+          curHashIndex[keyBucket].KeyTag[1]=keyBytes[3];     
+          curHashIndex[keyBucket].TableNum[0]=tableNumBytes[0];
+          curHashIndex[keyBucket].TableNum[1]=tableNumBytes[1];
+          curHashIndex[keyBucket].TableNum[2]=tableNumBytes[2];
+        }
+        else{
+          //keyBucket=curHashfunc.cuckooHash((char*)key.ToString().substr(0,config::kKeyLength).c_str(),config::cuckooHashNum-1,config::kKeyLength);
+          ///add to head
+          ListIndexEntry *lastEntry=&curHashIndex[keyBucket];
+          ListIndexEntry *beginNextEntry=lastEntry->nextEntry;    
+          ListIndexEntry *addEntry=new ListIndexEntry;      
+          addEntry->KeyTag[0]=lastEntry->KeyTag[0];
+          addEntry->KeyTag[1]=lastEntry->KeyTag[1];
+          addEntry->TableNum[0]=lastEntry->TableNum[0];
+          addEntry->TableNum[1]=lastEntry->TableNum[1];
+          addEntry->TableNum[2]=lastEntry->TableNum[2];
+
+          lastEntry->KeyTag[0]=keyBytes[2];
+          lastEntry->KeyTag[1]=keyBytes[3];
+          lastEntry->TableNum[0]=tableNumBytes[0];
+          lastEntry->TableNum[1]=tableNumBytes[1];
+          lastEntry->TableNum[2]=tableNumBytes[2];
+          lastEntry->nextEntry=addEntry;
+          addEntry->nextEntry=beginNextEntry;
+        }
+#endif
+      delete []keyBytes;   
+    }
+    delete []tableNumBytes;
+}
+}
 }
 
 //persistent the partition index into a disk file
@@ -1094,7 +1237,7 @@ void DBImpl::CompactMemTable(int partition) {
     RecordBackgroundError(s);
   }
   double flushEndTime=Env::Default()->NowMicros();
-  totalFlushTime+=flushEndTime-flushBeginTime;
+  totalFlushTime[partition]+=flushEndTime-flushBeginTime;
 }
 
 void DBImpl::CompactRange(const Slice* begin, const Slice* end,int partition) {
@@ -1193,8 +1336,27 @@ void DBImpl::MaybeScheduleCompaction(int partition) {
   }
 }
 
+void DBImpl::MaybeScheduleSizeMerge(int partition) {
+  mutex_.AssertHeld();
+  if (bg_compaction_scheduled_) {
+    // Already scheduled
+  } else if (shutting_down_.Acquire_Load()) {
+    // DB is being deleted; no more background compactions
+  } else if (!bg_error_.ok()) {
+    // Already got an error; no more changes
+  } else {
+    bg_compaction_scheduled_ = true;
+    sizeMergePartition=partition;
+    env_->Schedule(&DBImpl::BGSizeMergeWork, this);//BGWork() schedule in background
+  }
+}
+
 void DBImpl::BGWork(void* db) {
   reinterpret_cast<DBImpl*>(db)->BackgroundCall();
+}
+
+void DBImpl::BGSizeMergeWork(void* db) {
+  reinterpret_cast<DBImpl*>(db)->BackgroundSizeMergeCall();
 }
 
 
@@ -1215,9 +1377,33 @@ void DBImpl::BackgroundCall() {
   bg_cv_.SignalAll();
 }
 
+void DBImpl::BackgroundSizeMergeCall() {
+  MutexLock l(&mutex_);
+  assert(bg_compaction_scheduled_);
+  if (shutting_down_.Acquire_Load()) {
+    // No more background work when shutting down.
+  } else if (!bg_error_.ok()) {
+    // No more background work after a background error.
+     printf("in bg_error_,partition:%d\n",sizeMergePartition);
+  } else {
+     #ifdef SIZE_BASED_MERGE
+      if(versions_->NumLevelFiles(0,sizeMergePartition)>config::triggerSizeBasedMerge && triggerScan) {
+        fprintf(stderr, "versions_->NumLevelFiles(0,%d):%d >config::triggerSizeBasedMerge\n",sizeMergePartition, versions_->NumLevelFiles(0,sizeMergePartition));
+        bg_scanCompaction_scheduled_ = true;
+        MergeUnsortedStoreFilesTogether(sizeMergePartition);       
+        bg_scanCompaction_scheduled_ = false;
+        fprintf(stderr, "after versions_->NumLevelFiles(0,%d):%d >config::triggerSizeBasedMerge\n",sizeMergePartition, versions_->NumLevelFiles(0,sizeMergePartition));
+      }
+      #endif
+  }
+  bg_compaction_scheduled_ = false;
+  bg_cv_.SignalAll();
+}
+
 void DBImpl::BackgroundCompaction(int partition) {
   mutex_.AssertHeld();
   bool doSplit=false;
+
   if (pimm_[partition] != NULL) {
     CompactMemTable(partition);
     //return when the SSTable number of UnsortedStore smaller than the compaction throhold
@@ -1405,6 +1591,7 @@ void DBImpl::BackgroundCompaction(int partition) {
 
 //operate GC in log files
 void DBImpl::doBackgroundGC(int curPartition,int LogSegments){
+  double compactBeginTime=Env::Default()->NowMicros();
     FILE* readLogfile[LogSegments];
     for(int i=0;i<LogSegments;i++){
         readLogfile[i]=NULL;
@@ -1586,6 +1773,8 @@ void DBImpl::doBackgroundGC(int curPartition,int LogSegments){
             printf("Remove file:%s\n",name.c_str());
         }
     }
+    double compactEndTime=Env::Default()->NowMicros();
+    //totalCompactTime[curPartition]+=compactEndTime-compactBeginTime;
 }
 
 void DBImpl::doGCWithinPartition(int curPartition,int LogSegments){
@@ -1774,7 +1963,7 @@ void DBImpl::compactHashIndexTable(){
   }
 }
 
-void DBImpl::MergeUnsortedStoreFilesTogether(int partition){
+void DBImpl::MergeUnsortedStoreFilesTogether(int partition) {
     Compaction* c = versions_->PickSomeHashIndexFileCompaction(partition);///
 	  //fprintf(stderr,"before compactHashIndexPartitionTable L0:%d ,L1:%d,L2:%d\n",versions_->NumLevelFiles(0,partition),versions_->NumLevelFiles(1,partition),versions_->NumLevelFiles(config::kNumLevels+config::kTempLevel-1,partition));
     CompactionState* compact = new CompactionState(c);
@@ -1851,6 +2040,7 @@ void DBImpl::MergeUnsortedStoreFilesTogether(int partition){
 	  } catch(const std::future_error &e){ std::cerr<<"wait error\n"; }
     //fprintf(stderr,"after InstallSizeBasedCompactionResults NumFiles L0:%d ,L1:%d,L2:%d\n",versions_->NumLevelFiles(0,partition),versions_->NumLevelFiles(1,partition));
 	  delete c;
+    bg_cv_.SignalAll();
 }
 
 void DBImpl::compactHashIndexPartitionTable(int partition){
@@ -2325,7 +2515,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact,int partition,bool doSp
     isEmpty=versions_->GetSortedStoreMiddleKey(&middleKey,partition);
     if(!isEmpty){
       printf("middleKey:%s\n",middleKey.c_str());
-      treeRoot->insertNode((char*)middleKey.c_str(),NewestPartition);////
+      //treeRoot->insertNode((char*)middleKey.c_str(),NewestPartition);////
       
       uint64_t new_log_number = versions_->NewFileNumber();
       WritableFile* lfile = NULL;  
@@ -2338,8 +2528,8 @@ Status DBImpl::DoCompactionWork(CompactionState* compact,int partition,bool doSp
       pmem_[NewestPartition] = new MemTable(internal_comparator_);
       pmem_[NewestPartition]->Ref();	 
 
-      finishCompaction=true;
-      bg_cv_.SignalAll();//
+      //finishCompaction=true;
+      //bg_cv_.SignalAll();//
     }
   }
   // Release mutex while we're actually doing the compaction work
@@ -2439,7 +2629,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact,int partition,bool doSp
           //if(pos>0 && size<config::minValueSize){
           if(size<config::minValueSize){
               compact->builder[direction]->Add(key, value);
-          }else{
+          }else{            
               long keySize=strlen(ikey.user_key.ToString().c_str());        
               std::stringstream address_value,vlog_value;
               std::string vlogv=value;
@@ -2510,6 +2700,13 @@ Status DBImpl::DoCompactionWork(CompactionState* compact,int partition,bool doSp
 	    updateIndex.deleteFiles=compact->compaction->GetAllInput();
 	    ret= Env::Default()->threadPool->addTask(DBImpl::updateHashTable,(void *) &updateIndex);
   }
+
+  if(doSplit && !isEmpty){
+      treeRoot->insertNode((char*)middleKey.c_str(),NewestPartition);////
+      finishCompaction=true;
+      bg_cv_.SignalAll();//
+  }
+
   double upHashEndTime=Env::Default()->NowMicros();
   totalUpHashTime+=upHashEndTime-upHashBeginTime;
   stats[moveToLevel].micros = env_->NowMicros() - start_micros - imm_micros;
@@ -2544,7 +2741,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact,int partition,bool doSp
   Log(options_.info_log,
       "compacted to: %s", versions_->LevelSummary(&tmp));
   double compactEndTime=Env::Default()->NowMicros();
-  totalCompactTime+=compactEndTime-compactBeginTime;
+  totalCompactTime[partition]+=compactEndTime-compactBeginTime;
   return status;
 }
 #endif
@@ -2786,7 +2983,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact,int partition,bool doSp
   Log(options_.info_log,
       "compacted to: %s", versions_->LevelSummary(&tmp));
   double compactEndTime=Env::Default()->NowMicros();
-  totalCompactTime+=compactEndTime-compactBeginTime;
+  totalCompactTime[partition]+=compactEndTime-compactBeginTime;
   return status;
 }
 #endif
@@ -2885,8 +3082,9 @@ Status DBImpl::Get(const ReadOptions& options,
                    const Slice& key,
                    std::string* value) {
   Status s;
-  MutexLock l(&mutex_);
   double getBeginTime=Env::Default()->NowMicros();
+  MutexLock l(&mutex_);
+  
   SequenceNumber snapshot;
   if (options.snapshot != NULL) {
     snapshot = reinterpret_cast<const SnapshotImpl*>(options.snapshot)->number_;
@@ -2895,6 +3093,8 @@ Status DBImpl::Get(const ReadOptions& options,
   }
   int Partition;
   Partition=MapCharKeyToPartition(key);
+  double afterLockTime=Env::Default()->NowMicros();
+  totalReadLockTime[Partition]+=afterLockTime-getBeginTime;
   //search memtable,immutable,sstable
   MemTable* mem = pmem_[Partition];
   MemTable* imm = pimm_[Partition];
@@ -2904,24 +3104,28 @@ Status DBImpl::Get(const ReadOptions& options,
   current->Ref();
   bool have_stat_update = false;
   Version::GetStats stats;
+  double readBeginTime=Env::Default()->NowMicros();
+  totalReadOther[Partition]+=readBeginTime-afterLockTime;
   // Unlock while reading from files and memtables
   {
     mutex_.Unlock();
+    double beforeMemTime=Env::Default()->NowMicros();
+    totalReadLockTime[Partition]+=beforeMemTime-readBeginTime;
     // First look in the memtable, then in the immutable memtable (if any).
     LookupKey lkey(key, snapshot);
-    double readBeginTime=Env::Default()->NowMicros();
-    totalReadOther+=readBeginTime-getBeginTime;
+    
     if (mem->Get(lkey, value, &s)) {
       readMem++;
       double readMemTime=Env::Default()->NowMicros();
-      totalReadMem+=readMemTime-readBeginTime;
+      totalReadMem[Partition]+=readMemTime-readBeginTime;
     } else if (imm != NULL && imm->Get(lkey, value, &s)) {
       readImm++;
       double readIemTime=Env::Default()->NowMicros();
-      totalReadMem+=readIemTime-readBeginTime;
+      totalReadMem[Partition]+=readIemTime-beforeMemTime;
     } else {//search in SSTables of UnsortedStore and SortedStore
-      int lastReadL0=readIn0;
+      int readIn0=0;
       double t=0;
+      double beginLevelTime=Env::Default()->NowMicros();
 #ifdef LIST_HASH_INDEX
       int index=Partition*config::logFileNum+LogNum[Partition]-beginLogNum[Partition];
       s = current->Get(options, lkey,dbname_,value, Partition,globalLogFile,beginLogNum,&stats,ListHashIndex[Partition],&readDataSizeActual,&readIn0,&tableCacheNum,&blockCacheNum,&t);////////////
@@ -2933,14 +3137,17 @@ Status DBImpl::Get(const ReadOptions& options,
 #endif
       have_stat_update = true;
       double readLevelTime=Env::Default()->NowMicros();
-      if(lastReadL0<readIn0){
-	        totalReadL0+=readLevelTime-readBeginTime;
+      if(readIn0){
+	        totalReadL0[Partition]+=readLevelTime-beginLevelTime;
       }else{
-	      totalReadLn+=readLevelTime-readBeginTime;
+	      totalReadLn[Partition]+=readLevelTime-beginLevelTime;
         totalGetCostLn+=t;
       }
     }
+    double beforeLockTime=Env::Default()->NowMicros();
     mutex_.Lock();
+    double afterLockTime=Env::Default()->NowMicros();
+    totalReadLockTime[Partition]+=afterLockTime-beforeLockTime;
   }
   readDataSize+=key.size()+value->size();
   mem->Unref();
@@ -3050,19 +3257,27 @@ int DBImpl::NewIterator(const ReadOptions& options, char* beginKey,int scanLengt
   IterState* cleanup = new IterState;
   int partition=0;
   partition=MapCharKeyToPartition(Slice(beginKey));
+  triggerScan = true;
   mutex_.Lock();
-  #ifdef SIZE_BASED_MERGE
+  //printf("in scan NewIterator: %d\n",partition);
+  MaybeScheduleSizeMerge(partition);
+  /*#ifdef SIZE_BASED_MERGE
   //mutex_.Lock();
   if(versions_->NumLevelFiles(0,partition)>config::triggerSizeBasedMerge){
      printf("versions_->NumLevelFiles(0,%d)>config::triggerSizeBasedMerge\n",partition);
-     //fprintf(stderr, "versions_->NumLevelFiles(0,%d):%d >config::triggerSizeBasedMerge\n",partition, versions_->NumLevelFiles(0,partition));
+     fprintf(stderr, "versions_->NumLevelFiles(0,%d):%d >config::triggerSizeBasedMerge\n",partition, versions_->NumLevelFiles(0,partition));
      bg_scanCompaction_scheduled_ = true;
+     //mutex_.Lock();
      MergeUnsortedStoreFilesTogether(partition);
+     //mutex_.Unlock();
      bg_scanCompaction_scheduled_ = false;
      printf("after versions_->NumLevelFiles(0,%d)>config::triggerSizeBasedMerge\n",partition);
+     fprintf(stderr, "after versions_->NumLevelFiles(0,%d):%d >config::triggerSizeBasedMerge\n",partition, versions_->NumLevelFiles(0,partition));
   }
   //mutex_.Unlock();
   #endif
+  */
+  //mutex_.Lock();
   latest_snapshot = versions_->LastSequence();
   std::vector<Iterator*> list;
   Iterator* internal_iter;
@@ -3346,7 +3561,7 @@ Status DBImpl::rebuildHashIndex(const ReadOptions& options){
   /*for(int k=0;k<config::kNumPartition;k++){
      versions_->current()->rebuildHashIndexIterators(options,k,HashIndex);
   }*/
-  recoveryHashTable();
+  recoveryHashTable(options);
   fprintf(stderr,"after recoveryHashTable\n");
   return status;
 }
@@ -3486,10 +3701,10 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
       }
       if (status.ok()) {//write to log successfully,then write to MemTable
         double logEndTime=Env::Default()->NowMicros();
-        totalLogTime+=logEndTime-logBeginTime;
+        totalLogTime[last_writer->partition]+=logEndTime-logBeginTime;
         status = WriteBatchInternal::InsertInto(updates, pmem_);//Add to memtable
         double MemEndTime=Env::Default()->NowMicros();
-        totalCacheTime+=MemEndTime-logEndTime;
+        totalMemTableTime[last_writer->partition]+=MemEndTime-logEndTime;
       }
       mutex_.Lock();
       if (sync_error) {
@@ -3580,8 +3795,9 @@ Status DBImpl::MakeRoomForWrite(bool force,int partition) {
       break;
     }else if(versions_->NumLevelFiles(0,partition) >= config::kL0_CompactionTrigger*ampliFactor && !bg_compaction_scheduled_){ 
     //else if(versions_->NumLevelFiles(0,partition) >= config::kL0_CompactionTrigger && !bg_compaction_scheduled_){//
-        printf( "Too many L0 files:%d,partition:%d; Trigger Compaction\n",versions_->NumLevelFiles(0,partition),partition);
+        //printf( "Too many L0 files:%d,partition:%d; Trigger Compaction\n",versions_->NumLevelFiles(0,partition),partition);
         if(bg_compaction_scheduled_ || doCompact){
+            printf( "Too many L0 files:%d,partition:%d; wait!!\n",versions_->NumLevelFiles(0,partition),partition);
             bg_cv_.Wait();
             break;
         }
@@ -3594,7 +3810,7 @@ Status DBImpl::MakeRoomForWrite(bool force,int partition) {
         (pmem_[partition]->ApproximateMemoryUsage() <= options_.write_buffer_size)) {// There is room in current memtable
       break;
     }else if (pimm_[partition] != NULL) {//memtable is full,the previous memtable is being compacted, so Wait
-      //fprintf(stderr,"memtable is full,the previous memtable is being compacted, so Wait,P:%d\n",partition);
+      fprintf(stderr,"memtable is full,the previous memtable is being compacted, so Wait,P:%d\n",partition);
       Log(options_.info_log, "Current memtable full; waiting...\n");    
       if(!bg_compaction_scheduled_){
           MaybeScheduleCompaction(partition);
@@ -3631,6 +3847,9 @@ Status DBImpl::MakeRoomForWrite(bool force,int partition) {
       force = false;  // Do not force another compaction if have room
       //MaybeScheduleCompaction();
       CompactMemTable(partition);
+
+      //MaybeScheduleSizeMerge(partition); //////
+
     }else{
       printf("in wait!!\n");
       bg_cv_.Wait();
@@ -3779,11 +3998,7 @@ Status DB::Open(const Options& options, const std::string& dbname,
   //printf("after rebuildTree,totalPartitions,:%d,NewestPartition:%d\n",totalPartitions,impl->NewestPartition);
   impl->treeRoot->printfTree();
   ////////////////////////////////////////////
-  impl->initHashIndex();
-  Status s1=impl->rebuildHashIndex(ReadOptions());//
-  double recoveryIndexTime=Env::Default()->NowMicros();
-  printf("recoveryIndexTime:%lf\n",recoveryIndexTime-recoveryBeginTime);
-  fprintf(stderr,"recoveryIndexTime:%lf\n",recoveryIndexTime-recoveryBeginTime);
+  
   //impl->TreeFile.open("B_TreeStore.txt");
   Status s = impl->Recover(&edit, &save_manifest);
   //std::cerr<<"after Recover\n";
@@ -3824,8 +4039,17 @@ Status DB::Open(const Options& options, const std::string& dbname,
     //edit.setPartitionInfoVec(impl->myPartitionInfo,impl->NewestPartition+1);//
     s = impl->versions_->LogAndApply(&edit, &impl->mutex_);
   }
+
+  double recoveryIndexBegainTime=Env::Default()->NowMicros();
+  impl->initHashIndex();
+  Status s1=impl->rebuildHashIndex(ReadOptions());//
+  double recoveryIndexTime=Env::Default()->NowMicros();
+  printf("recoveryIndexTime:%lf\n",recoveryIndexTime-recoveryIndexBegainTime);
+  fprintf(stderr,"recoveryIndexTime:%lf\n",recoveryIndexTime-recoveryIndexBegainTime);
+
   double recoveryEndTime=Env::Default()->NowMicros();
-  fprintf(stderr,"recoveryTime:%lf\n",recoveryEndTime-recoveryIndexTime);
+  //fprintf(stderr,"recoveryTime:%lf\n",recoveryEndTime-recoveryIndexTime);
+  fprintf(stderr,"recoveryTime:%lf\n",recoveryEndTime-recoveryBeginTime);
   if (s.ok()) {
       for(int i=0;i<config::kNumPartition;i++){
 	      impl->DeleteObsoleteFiles(i);

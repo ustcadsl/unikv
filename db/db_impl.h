@@ -105,6 +105,7 @@ class DBImpl : public DB {
   vector<uint64_t> logNumVec;
   vector<uint64_t> logImNumVec;
   HashFunc hashfunc;
+  int flushedMemTableNum[config::kNumPartition] = {0};
   
 #ifdef LIST_HASH_INDEX
   struct ListIndexEntry *ListHashIndex[config::kNumPartition];
@@ -123,11 +124,13 @@ class DBImpl : public DB {
   bool finishCompaction;
   bool bg_scanCompaction_scheduled_;
   bool doCompact;
+  bool triggerScan = false;
   int compactPartition;
+  int sizeMergePartition;
   uint64_t continueFlushBytes[config::kNumPartition];
   
-  double totalLogTime,totalCacheTime,totalFlushTime,totalCompactTime;
-  double totalReadMem,totalReadL0,totalReadLn,totalGetCostLn,totalReadOther;
+  double totalLogTime[config::kNumPartition],totalMemTableTime[config::kNumPartition], totalFlushTime[config::kNumPartition],totalCompactTime[config::kNumPartition], totalSplitTime, totalCacheTime;
+  double totalReadMem[config::kNumPartition],totalReadHashIndex, totalReadL0[config::kNumPartition],totalReadLn[config::kNumPartition],totalGetCostLn,totalReadOther[config::kNumPartition], totalReadLockTime[config::kNumPartition];
   
   DBImpl(const Options& options, const std::string& dbname);
   virtual ~DBImpl();
@@ -194,11 +197,11 @@ class DBImpl : public DB {
   // Samples are taken approximately once every config::kReadBytesPeriod
   // bytes.
   void RecordReadSample(Slice key);
-  void persistentHashTable();
+  void persistentHashTable(uint64_t SSTableID, int partition);
   void compactHashIndexTable();
   void compactHashIndexPartitionTable(int partition);
   void MergeUnsortedStoreFilesTogether(int partition);
-  void recoveryHashTable();
+  void recoveryHashTable(const ReadOptions& options);
   int recoveryB_Tree(TreeNode* Root);
   void persistentB_Tree();
   int seekValueParallel(Iterator* iter,int partition,char* beginKey,int scanLength);
@@ -260,8 +263,11 @@ class DBImpl : public DB {
   void RecordBackgroundError(const Status& s);
 
   void MaybeScheduleCompaction(int partition) EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+  void MaybeScheduleSizeMerge(int partition) EXCLUSIVE_LOCKS_REQUIRED(mutex_);
   static void BGWork(void* db);
+  static void BGSizeMergeWork(void* db);
   void BackgroundCall();
+  void BackgroundSizeMergeCall();
   void  BackgroundCompaction(int partition) EXCLUSIVE_LOCKS_REQUIRED(mutex_);
   void CleanupCompaction(CompactionState* compact,int partition)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);

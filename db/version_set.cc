@@ -303,6 +303,30 @@ void Version::AddUnsortedStoreIterators(const ReadOptions& options,
       } 
 }
 
+void Version::UnCheckPointSSTableIterators(const ReadOptions& options,
+                           std::vector<FileMetaData*>* inputs,int partition, uint64_t SSTableID) {
+  // Merge all level zero files together since they may overlap
+  std::vector<FileMetaData*>& files=pfiles_[partition][0];
+  inputs->clear();
+  int size=pfiles_[partition][0].size();
+  printf("partition:%d, pfiles_ size:%d\n",partition, size);
+  //Iterator** list = new Iterator*[size];
+  int num = 0;
+	for (size_t i = 0; i < files.size(); i++) {
+		if(files[i]->number > SSTableID) {
+		  //Iterator* iter=vset_->table_cache_->NewIterator(options, files[i]->number, files[i]->file_size,false,true);
+      //iters.insert(files[i]->number, iter);
+      inputs->push_back(files[i]);
+    }
+  }
+
+	/*Iterator* result = NewMergingIterator(&vset_->icmp_, list, num); 
+	//result->SeekToFirst();
+	delete[] list;
+	return result;	
+  */
+}
+
 void Version::AddIterators(const ReadOptions& options,
                            std::vector<Iterator*>* iters,int partition) {
   // Merge all level zero files together since they may overlap
@@ -378,6 +402,8 @@ void Version::AddIterators(const ReadOptions& options,
   std::vector<FileMetaData*>& files=pfiles_[partition][0];
   void *status;
    const Comparator* user_cmp = vset_->icmp_.user_comparator();
+
+#ifdef ADDITER_THREADS
   struct versionSetPara Para[files.size()];
   std::future<void*> ret[files.size()];
   int threadCount=0;
@@ -404,6 +430,23 @@ void Version::AddIterators(const ReadOptions& options,
       } catch(const std::future_error &e){ std::cerr<<"wait error\n"; }
       iters->push_back(Para[i].tableIter);
   }
+#endif
+
+#ifdef ADDITER_NORMAL
+  for (size_t i = 0; i < files.size(); i++) {
+    FileMetaData* f=files[i];
+    const Slice file_limit = f->largest.user_key();
+    if (beginKey != NULL && user_cmp->Compare(file_limit, Slice(beginKey)) < 0) {
+      //printf("not check this table ID=%d\n",(int)f->number);
+      continue;
+      // "f" is completely before specified range; skip it
+    }
+    iters->push_back(
+        vset_->table_cache_->NewIterator(
+            options, f->number, f->file_size,false,config::seekPrefetch));
+  }
+#endif
+
   // For levels > 0, we can use a concatenating iterator that sequentially
   // walks through the non-overlapping files in the level, opening them lazily.
   for (int level = 1; level < config::kNumLevels+config::kTempLevel; level++) {
@@ -920,6 +963,7 @@ Status Version::GetwithCukoo(const ReadOptions& options,
        // fprintf(stderr,"look key:%s in L0\n",user_key.ToString().c_str());
        s=GetKeyinUnsortedStoreByCukoo(options,LogFile,Lkey,&saver,partition,myHashIndex,readDataSizeActual,tableCacheNum,blockCacheNum);
        if(saver.state==kFound){
+            *readIn0 = 1;
             return s;
         }
     } 
@@ -2007,6 +2051,15 @@ int VersionSet::NumLevelFiles(int level,int partition) const {
   int numFiles=0;
   numFiles= current_->pfiles_[partition][level].size();
   return numFiles;
+}
+
+int64_t VersionSet::LevelTotalSize(int level,int partition)const {
+  const std::vector<FileMetaData*>& files = current_->pfiles_[partition][level];
+  int64_t sum = 0;
+  for (size_t i = 0; i < files.size(); i++) {
+    sum += files[i]->file_size;
+  }
+  return sum/1048576;
 }
 
 const char* VersionSet::LevelSummary(LevelSummaryStorage* scratch) const {

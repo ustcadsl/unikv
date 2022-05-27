@@ -23,22 +23,22 @@ namespace leveldb {
 namespace config {
 
 static const int kNumPartition =50;//the max partition number 
-static const long long int kSplitBytes=43999672960;//41949672960; the max capacity of a partition
-static const long long int kGCBytes=43999672960;//49999672960; the GC throhold of a partition
+static const long long int kSplitBytes=43999672960;//43999672960, 41949672960; the max capacity of a partition
+static const long long int kGCBytes=43999672960;//43999672960, 49999672960; the GC throhold of a partition
 static const long long int kcontinueWriteBytes=25474836480;
 
 static const int kNumLevels =2;// the level number of a partition
 static const int kTempLevel =0;
-static const int kL0_CompactionTrigger =66;//the SSTable number in UnsortedStore that begin trigger compaction, NOTE:kL0_CompactionTrigger*64MB< kSplitBytes
-static const int kL0_SlowdownWritesTrigger =1.5*kL0_CompactionTrigger;//1.4
-static const int kL0_StopWritesTrigger =1.5*kL0_CompactionTrigger;//1.4
+static const int kL0_CompactionTrigger =66;//66, the SSTable number in UnsortedStore that begin trigger compaction, NOTE:kL0_CompactionTrigger*64MB< kSplitBytes
+static const int kL0_SlowdownWritesTrigger =1.5*kL0_CompactionTrigger;//1.4,1.5
+static const int kL0_StopWritesTrigger =1.5*kL0_CompactionTrigger;//1.4,1.5
 
 static const int bucketNum=4000000; //the number of buckets in hash index
 static const int cuckooHashNum=4; //the number of cuckoo hash functions
 static const int logFileNum=200;
 static const int maxThreadNum=30;
 static const int maxScanThread=50; //the max threads of scan
-static const int triggerSizeBasedMerge=5; //the throhold of trigger a size-based merge
+static const int triggerSizeBasedMerge=5; //5,10 //the throhold of trigger a size-based merge
 static const bool seekPrefetch=true;
 static const int pointerSize=10;
 static const int minValueSize=100;
@@ -52,7 +52,7 @@ static const int  baseRange=1100000;//no use
 static const char* B_TreeDir="../persitentIndexDir";
 static const char* B_TreeFile="../persitentIndexDir/B_TreeStore.txt";
 static const char* HashTableDir="../persitentIndexDir";
-static const char* HashTableFile="../persitentIndexDir/hashTableStore.txt";
+static const char* HashTableFile="../persitentIndexDir/hashTableStore";
 
 // Maximum level to which a new compacted memtable is pushed if it
 // does not create overlap.  We try to push to level 2 to avoid the
